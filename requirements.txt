@@ -1,0 +1,10 @@
+pandas
+numpy
+matplotlib
+seaborn
+transformers
+scikit-learn
+praw
+streamlit
+emoji
+nltk
