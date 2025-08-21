@@ -14,3 +14,6 @@ hf_xet
 keybert
 sentence-transformers
 sumy
+bertopic
+fairlearn
+spacy

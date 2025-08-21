@@ -8,11 +8,15 @@ from visualization.plots import plot_sentiment_distribution, plot_intent_distrib
 
 # Keyword extraction and summarization imports
 
+
 from keybert import KeyBERT
 from transformers import pipeline as hf_pipeline
 from sumy.parsers.plaintext import PlaintextParser
 from sumy.nlp.tokenizers import Tokenizer
 from sumy.summarizers.text_rank import TextRankSummarizer
+from bertopic import BERTopic
+import spacy
+from fairlearn.metrics import demographic_parity_difference
 
 # 1. Ingest Reddit data
 reddit = RedditIngestor(subreddit="python", limit=50)
@@ -27,11 +31,18 @@ for post in posts:
 
 
 # 3. Sentiment, emotion, keyword extraction, and summarization
+# 3. Sentiment, emotion, keyword extraction, and summarization
+
 sentiment_model = SentimentAnalyzer(task="sentiment")
 emotion_model = SentimentAnalyzer(task="emotion")
-
 kw_model = KeyBERT()
 summarizer = hf_pipeline("summarization", model="facebook/bart-large-cnn")
+
+# Topic modeling setup
+topic_model = BERTopic(verbose=False)
+
+# Entity linking setup
+nlp = spacy.load("en_core_web_sm")
 
 # Highlight detection setup (TextRank)
 def extract_highlight(text: str) -> str:
@@ -44,6 +55,8 @@ def extract_highlight(text: str) -> str:
     except Exception:
         return ''
 
+
+texts_for_topic = []
 for post in posts:
     # Sentiment
     sentiment = sentiment_model.predict(post['cleaned_text'])
@@ -70,22 +83,52 @@ for post in posts:
     post['summary'] = summary
     # Highlight detection (most important sentence)
     post['highlight'] = extract_highlight(orig_text)
+    # For topic modeling
+    texts_for_topic.append(post['cleaned_text'])
+    # Entity linking (NER)
+    doc = nlp(orig_text)
+    post['entities'] = ', '.join([f"{ent.text} ({ent.label_})" for ent in doc.ents])
 
-# 4. Intent classification (using dummy model for now)
+
+# 4. Improved intent classification (multi-class, e.g., ask/feedback/rant)
 intent_model = IntentClassifier()
-# For demo, train on dummy data
-texts = ["order pizza", "book flight", "play music", "what's the weather"]
-labels = ["food", "travel", "music", "weather"]
-intent_model.train(texts, labels)
+# Example: train on more realistic intent classes
+intent_texts = [
+    "How do I install this?", "Can someone help me?", "This feature is great!", "I hate this bug.",
+    "Why is this not working?", "Thanks for the update!", "This is so frustrating.", "Feedback: UI is confusing."
+]
+intent_labels = [
+    "ask", "ask", "feedback", "rant",
+    "ask", "feedback", "rant", "feedback"
+]
+intent_model.train(intent_texts, intent_labels)
 for post in posts:
     intent = intent_model.predict(post['cleaned_text'])
     post['intent'] = intent['label']
     post['intent_prob'] = max(intent['probabilities'].values())
 
-# 5. Save results
+
+# 5. Topic modeling (BERTopic)
+topics, _ = topic_model.fit_transform(texts_for_topic)
+for i, post in enumerate(posts):
+    post['topic'] = topics[i]
+
+# 6. Save results
 results_df = pd.DataFrame(posts)
 results_df.to_csv("results.csv", index=False)
 
-# 6. Visualization
+
+# 7. Visualization
 plot_sentiment_distribution(results_df)
 plot_intent_distribution(results_df)
+
+# 8. Bias handling (Fairlearn demo: demographic parity on sentiment by author)
+try:
+    if 'author' in results_df.columns:
+        # For demo, treat sentiment POSITIVE as 1, else 0
+        y_true = (results_df['sentiment'] == 'positive').astype(int)
+        groups = results_df['author']
+        dp = demographic_parity_difference(y_true, y_pred=y_true, sensitive_features=groups)
+        print(f"Demographic parity difference (sentiment vs. author): {dp}")
+except Exception as e:
+    print(f"Fairness evaluation error: {e}")
