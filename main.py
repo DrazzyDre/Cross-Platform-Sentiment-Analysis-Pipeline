@@ -18,9 +18,60 @@ from bertopic import BERTopic
 import spacy
 from fairlearn.metrics import demographic_parity_difference
 
-# 1. Ingest Reddit data
-reddit = RedditIngestor(subreddit="python", limit=50)
-posts = reddit.fetch_posts()
+
+
+# --- FLEXIBLE INGESTION CLI ---
+import sys
+
+def get_input(prompt, default=None, cast_func=None):
+    val = input(f"{prompt} [{default}]: ")
+    if not val and default is not None:
+        return default
+    if cast_func:
+        try:
+            return cast_func(val)
+        except Exception:
+            print(f"Invalid input. Using default: {default}")
+            return default
+    return val
+
+
+print("\nReddit Ingestion Configuration:")
+subreddits_str = get_input("Subreddit(s) to analyze (comma-separated)", default="python")
+subreddits = [s.strip() for s in subreddits_str.split(",") if s.strip()]
+mode = get_input("Ingestion mode ('top', 'keyword', 'both')", default="top").lower()
+post_limit = get_input("Number of posts to fetch (per subreddit, per mode)", default=50, cast_func=int)
+keywords = []
+min_score = 0
+if mode in ("keyword", "both"):
+    kw_str = get_input("Enter 2-5 keywords (comma-separated)", default="pandas,dataframe,plot")
+    keywords = [k.strip() for k in kw_str.split(",") if k.strip()]
+    if not (2 <= len(keywords) <= 5):
+        print("Warning: 2-5 keywords recommended. Using all provided.")
+    min_score = get_input("Minimum score (engagement) for keyword search", default=10, cast_func=int)
+
+# Multi-subreddit ingestion
+all_posts = []
+for subreddit in subreddits:
+    reddit = RedditIngestor(subreddit=subreddit, limit=post_limit)
+    if mode == 'top':
+        posts = reddit.fetch_posts(mode='top', limit=post_limit)
+    elif mode == 'keyword':
+        posts = reddit.fetch_posts(mode='keyword', keywords=keywords, limit=post_limit, min_score=min_score)
+    elif mode == 'both':
+        posts = reddit.fetch_posts(mode='both', keywords=keywords, limit=post_limit, min_score=min_score)
+    else:
+        print(f"Invalid mode for subreddit {subreddit}. Skipping.")
+        continue
+    all_posts.extend(posts)
+
+# Deduplicate posts by id across all subreddits
+seen_ids = set()
+posts = []
+for post in all_posts:
+    if post['id'] not in seen_ids:
+        posts.append(post)
+        seen_ids.add(post['id'])
 
 
 # 2. Preprocess text
@@ -73,9 +124,13 @@ for post in posts:
     post['keywords'] = ', '.join([kw for kw, _ in keywords])
     # Summarization (use original text for better context)
     orig_text = (post.get('title', '') + ' ' + post.get('text', '')).strip()
-    if len(orig_text.split()) > 20:
+    word_count = len(orig_text.split())
+    min_length = 15
+    # Set max_length to 80% of input length, but at most 60, and always > min_length
+    max_length = min(60, max(min_length+1, int(word_count * 0.8)))
+    if word_count > min_length and max_length > min_length:
         try:
-            summary = summarizer(orig_text, max_length=60, min_length=15, do_sample=False)[0]['summary_text']
+            summary = summarizer(orig_text, max_length=max_length, min_length=min_length, do_sample=False)[0]['summary_text']
         except Exception:
             summary = ''
     else:
@@ -83,8 +138,10 @@ for post in posts:
     post['summary'] = summary
     # Highlight detection (most important sentence)
     post['highlight'] = extract_highlight(orig_text)
-    # For topic modeling
-    texts_for_topic.append(post['cleaned_text'])
+    # For topic modeling: only add non-empty strings
+    cleaned = post['cleaned_text']
+    if isinstance(cleaned, str) and cleaned.strip():
+        texts_for_topic.append(cleaned)
     # Entity linking (NER)
     doc = nlp(orig_text)
     post['entities'] = ', '.join([f"{ent.text} ({ent.label_})" for ent in doc.ents])
