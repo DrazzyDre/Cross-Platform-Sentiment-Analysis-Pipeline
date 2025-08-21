@@ -8,3 +8,6 @@ praw
 streamlit
 emoji
 nltk
+torch
+python-dotenv
+hf_xet

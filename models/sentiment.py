@@ -6,6 +6,8 @@ class SentimentAnalyzer:
         self.classifier = pipeline("sentiment-analysis", model=model_name)
 
     def predict(self, text: str) -> Dict:
+        # Truncate to 512 words
+        truncated = ' '.join(text.split()[:512])
         result = self.classifier(text)[0]
         return {
             "label": result["label"],
